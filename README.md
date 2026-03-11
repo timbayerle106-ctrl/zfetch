@@ -15,7 +15,7 @@ A fast system information fetcher written in C. No ASCII art, just the info.
 ### Build from source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/zfetch.git
+git clone https://github.com/timbayerle106-ctrl/zfetch.git
 cd zfetch
 make
 sudo make install
