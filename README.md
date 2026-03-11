@@ -113,3 +113,4 @@ Found a bug? Open an issue or submit a pull request.
 ---
 
 *Inspired by fastfetch and neofetch, but smaller and faster.*
+*Ai was used for Documentation and Comments*
