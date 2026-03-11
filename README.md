@@ -72,7 +72,7 @@ Terminal: gnome-terminal
 CPU:     8 cores (Intel(R) Core(TM) i5-10300H CPU @ 2.50GHz)
 GPU:     NVIDIA Corporation GA107M [GeForce RTX 3050 Mobile]
 Memory:  4.2 GB / 16.0 GB (26%)
-Packages: apt (2847)
+Packages: dpkg (2847)
 
 ████████████████████████████
 ████████████████████████████
