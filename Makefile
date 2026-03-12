@@ -6,6 +6,10 @@ CFLAGS = -O3 -flto -fomit-frame-pointer -fno-exceptions -fno-unwind-tables -fno-
 CFLAGS += -Wall -Wextra -std=c11 -pthread
 LDFLAGS = -s -flto -O3 -pthread
 
+# Install paths - PREFIX can be overridden
+PREFIX ?= /usr/local
+DESTDIR ?=
+
 # Platform detection
 UNAME_S := $(shell uname -s 2>/dev/null || echo "Linux")
 
@@ -25,15 +29,19 @@ ifdef ANDROID
     LDFLAGS += -static
 endif
 
-# Termux native build detection
+# Termux native build detection - auto-set PREFIX for Termux
 ifneq ($(wildcard /data/data/com.termux),)
     CFLAGS += -D__ANDROID__
+    # Auto-detect Termux prefix if not explicitly set
+    ifeq ($(PREFIX),/usr/local)
+        PREFIX = /data/data/com.termux/files/usr
+    endif
 endif
 
 TARGET = zfetch
 SRC = src/main.c
 
-.PHONY: all clean install
+.PHONY: all clean install uninstall
 
 all: $(TARGET)
 
@@ -44,7 +52,11 @@ clean:
 	rm -f $(TARGET)
 
 install: $(TARGET)
-	install -m 755 $(TARGET) /usr/local/bin/
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 
 # Android builds
 android-arm64:
