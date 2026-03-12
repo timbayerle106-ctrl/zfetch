@@ -1,7 +1,11 @@
 /*
- * zfetch v3.1 - Ultra-Fast Parallel System Fetcher
+ * zfetch v3.2 - Ultra-Fast Parallel System Fetcher
  * Supports: Linux, macOS, Android/Termux
  * Target: <10ms execution time
+ *
+ * Fixes from v3.1:
+ * - Fixed resolution showing DPI instead of actual screen resolution on Android
+ * - Fixed uptime detection on Android/Termux (fallback methods)
  *
  * Key optimizations:
  * - Parallel thread collection
@@ -342,14 +346,39 @@ static void* thread_cpu(void *arg) {
     return NULL;
 }
 
-/* Thread: Get uptime */
+/* Thread: Get uptime - FIXED for Android/Termux */
 static void* thread_uptime(void *arg) {
     SystemInfo *info = (SystemInfo*)arg;
     
 #ifdef __linux__
+    /* Primary method: /proc/uptime */
     char buf[64];
     if (read_file("/proc/uptime", buf, sizeof(buf)) > 0) {
         info->uptime_secs = (uint32_t)strtod(buf, NULL);
+    }
+    
+    /* Android/Termux fallback if /proc/uptime failed or returned 0 */
+    if (info->uptime_secs == 0 && info->is_android) {
+        /* Method 2: Try /proc/stat btime (boot time) */
+        char stat_buf[4096];
+        if (read_file("/proc/stat", stat_buf, sizeof(stat_buf)) > 0) {
+            char *btime = strstr(stat_buf, "btime ");
+            if (btime) {
+                btime += 6;  /* Skip "btime " */
+                time_t boot_time = (time_t)strtoll(btime, NULL, 10);
+                if (boot_time > 0) {
+                    info->uptime_secs = (uint32_t)(time(NULL) - boot_time);
+                }
+            }
+        }
+    }
+    
+    /* Method 3: Try sysinfo syscall as final fallback */
+    if (info->uptime_secs == 0) {
+        struct sysinfo s_info;
+        if (sysinfo(&s_info) == 0) {
+            info->uptime_secs = (uint32_t)s_info.uptime;
+        }
     }
 #endif
 
@@ -535,43 +564,142 @@ static void* thread_gpu(void *arg) {
     return NULL;
 }
 
-/* Thread: Get resolution */
+/* Thread: Get resolution - FIXED for Android */
 static void* thread_resolution(void *arg) {
     SystemInfo *info = (SystemInfo*)arg;
     
     if (info->is_android) {
-        /* Android resolution via getprop or wm size */
-        if (has_getprop) {
-            /* Try to get from getprop */
-            getprop("ro.sf.lcd_density", info->resolution, 15);
-            if (info->resolution[0]) {
-                /* Just density, not ideal but something */
-                char tmp[32];
-                snprintf(tmp, sizeof(tmp), "DPI: %s", info->resolution);
-                strncpy(info->resolution, tmp, 31);
-                info->has_resolution = 1;
-            }
-        }
+        /* 
+         * Android resolution detection - try multiple methods
+         * Priority: actual resolution > fallback to DPI info
+         */
         
-        /* Try wm size command (requires root or specific permissions) */
+        /* Method 1: Try wm size command (may fail without permissions) */
         FILE *fp = popen("wm size 2>/dev/null", "r");
         if (fp) {
-            char line[64];
+            char line[128];
             if (fgets(line, sizeof(line), fp)) {
-                /* Format: "Physical size: 1080x2400" */
+                /* Format: "Physical size: 1080x2400" or "Override size: 1080x2400" */
                 char *size = strstr(line, "size: ");
                 if (size) {
-                    size += 6;
+                    size += 6;  /* Skip "size: " */
                     size[strcspn(size, "\n")] = '\0';
+                    /* Now we have actual resolution like "1080x2400" */
                     strncpy(info->resolution, size, 31);
                     info->has_resolution = 1;
+                    pclose(fp);
+                    return NULL;  /* Success! */
                 }
             }
             pclose(fp);
         }
+        
+        /* Method 2: Try framebuffer info (works on some devices) */
+        char buf[256];
+        
+        /* Try fb0 virtual_size - format: "1080,2400" */
+        if (read_file("/sys/class/graphics/fb0/virtual_size", buf, sizeof(buf)) > 0) {
+            /* Format: width,height */
+            char *comma = strchr(buf, ',');
+            if (comma) {
+                int width = atoi(buf);
+                int height = atoi(comma + 1);
+                if (width > 0 && height > 0 && width < 10000 && height < 10000) {
+                    snprintf(info->resolution, 31, "%dx%d", width, height);
+                    info->has_resolution = 1;
+                    return NULL;
+                }
+            }
+        }
+        
+        /* Method 3: Try fb0 modes - may contain resolution */
+        if (read_file("/sys/class/graphics/fb0/modes", buf, sizeof(buf)) > 0) {
+            /* Format might be: "U:1080x2400p-0" or similar */
+            char *x = strchr(buf, 'x');
+            if (x) {
+                /* Find start of width (before 'x') */
+                char *start = x - 1;
+                while (start > buf && isdigit(*(start-1))) start--;
+                /* Find end of height (after 'x') */
+                char *end = x + 1;
+                while (*end && isdigit(*end)) end++;
+                
+                if (end > start + 3) {
+                    int width = atoi(start);
+                    int height = atoi(x + 1);
+                    if (width > 0 && height > 0 && width < 10000 && height < 10000) {
+                        snprintf(info->resolution, 31, "%dx%d", width, height);
+                        info->has_resolution = 1;
+                        return NULL;
+                    }
+                }
+            }
+        }
+        
+        /* Method 4: Try SurfaceFlinger display info (requires dumpsys, may fail) */
+        fp = popen("dumpsys SurfaceFlinger 2>/dev/null | grep -E 'width|height' | head -4", "r");
+        if (fp) {
+            char line[256];
+            int width = 0, height = 0;
+            while (fgets(line, sizeof(line), fp)) {
+                if (strstr(line, "width=") && width == 0) {
+                    char *w = strstr(line, "width=");
+                    if (w) width = atoi(w + 6);
+                }
+                if (strstr(line, "height=") && height == 0) {
+                    char *h = strstr(line, "height=");
+                    if (h) height = atoi(h + 7);
+                }
+                if (width > 0 && height > 0) break;
+            }
+            pclose(fp);
+            if (width > 0 && height > 0 && width < 10000 && height < 10000) {
+                snprintf(info->resolution, 31, "%dx%d", width, height);
+                info->has_resolution = 1;
+                return NULL;
+            }
+        }
+        
+        /* Method 5: Try getprop for display metrics */
+        if (has_getprop) {
+            char width_str[16] = {0};
+            char height_str[16] = {0};
+            char density_str[16] = {0};
+            
+            /* Try qemu.sf.lcd_density for emulator */
+            getprop("qemu.sf.lcd_density", density_str, 15);
+            
+            /* Try actual display dimensions from ro.sf. */
+            getprop("ro.sf.lcd_width", width_str, 15);
+            getprop("ro.sf.lcd_height", height_str, 15);
+            
+            int w = atoi(width_str);
+            int h = atoi(height_str);
+            if (w > 0 && h > 0 && w < 10000 && h < 10000) {
+                snprintf(info->resolution, 31, "%dx%d", w, h);
+                info->has_resolution = 1;
+                return NULL;
+            }
+        }
+        
+        /* 
+         * Method 6: Last resort - show DPI with better label
+         * Only use this if we couldn't get actual resolution
+         */
+        if (has_getprop) {
+            char density[16] = {0};
+            getprop("ro.sf.lcd_density", density, 15);
+            if (density[0]) {
+                /* Label it clearly as DPI, not resolution */
+                snprintf(info->resolution, 31, "DPI: %s", density);
+                info->has_resolution = 1;
+            }
+        }
+        
         return NULL;
     }
     
+    /* Non-Android: use xrandr */
     if (!has_xrandr) return NULL;
     
     FILE *fp = popen("xrandr --current 2>/dev/null | grep ' connected' | head -1", "r");
@@ -683,7 +811,7 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--time") == 0 || strcmp(argv[i], "-t") == 0) show_time = 1;
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("zfetch v3.1 - Ultra-fast parallel system fetcher\n"
+            printf("zfetch v3.2 - Ultra-fast parallel system fetcher\n"
                    "Supports: Linux, macOS, Android/Termux\n"
                    "Usage: zfetch [--time] [--help]\n");
             return 0;
