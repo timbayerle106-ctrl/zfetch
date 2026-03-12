@@ -7,7 +7,7 @@ A fast system information fetcher written in C. No ASCII art, just the info.
 | Metric | Value |
 |--------|-------|
 | Execution time | 19-52 ms |
-| Binary size | ~23 KB |
+| Binary size | ~26.8 KB |
 | Memory | Stack only (no heap allocations) |
 
 ## Installation
